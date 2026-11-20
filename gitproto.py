@@ -408,10 +408,12 @@ def upload_pack_v2(repo: Any, body: bytes) -> bytes:
                 deepen_not.append(line[11:].split()[0])
             # ignore other flags: done, thin-pack, no-progress, ofs-delta
     
-    if not wants:
+    # Filter out ZERO_SHA and unknown objects
+    effective_wants = [w for w in wants if w != ZERO_SHA and repo.objects.has(w)]
+    if not effective_wants:
         return FLUSH
     
-    send_objects, new_boundary, unshallow = _fetch_plan(repo, wants, haves, shallow, deepen, deepen_not)
+    send_objects, new_boundary, unshallow = _fetch_plan(repo, effective_wants, haves, shallow, deepen, deepen_not)
     
     # Build pack
     pack = None
@@ -496,11 +498,13 @@ def upload_pack_v0(repo: Any, body: bytes) -> bytes:
     # Always send NAK first
     out.extend(pkt_text("NAK\n"))
     
-    if not wants:
+    # Filter out ZERO_SHA and unknown objects
+    effective_wants = [w for w in wants if w != ZERO_SHA and repo.objects.has(w)]
+    if not effective_wants:
         out.extend(FLUSH)
         return bytes(out)
     
-    send_objects, _, _ = _fetch_plan(repo, wants, haves, [], deepen, [])
+    send_objects, _, _ = _fetch_plan(repo, effective_wants, haves, [], deepen, [])
     
     pack = write_pack(repo.objects, send_objects)
     
