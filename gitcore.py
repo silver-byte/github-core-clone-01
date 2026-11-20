@@ -211,20 +211,27 @@ def _read_varint(data: bytes, offset: int) -> Tuple[int, int]:
     return val, offset
 
 
-def _read_varint_signed(data: bytes, offset: int) -> Tuple[int, int]:
-    """Read negative offset varint (OFS_DELTA). Returns (value, new_offset)."""
-    val = 0
-    shift = 0
-    while True:
+def _read_ofs_delta_offset(data: bytes, offset: int) -> Tuple[int, int]:
+    """Read OFS_DELTA base offset (git's special varint encoding).
+    
+    Encoding: 
+      b = next byte; offset = b & 0x7f
+      while b & 0x80:
+          b = next byte
+          offset = ((offset + 1) << 7) | (b & 0x7f)
+    Returns (offset_value, new_offset).
+    """
+    if offset >= len(data):
+        raise PackError("Unexpected EOF reading OFS_DELTA offset")
+    b = data[offset]
+    offset += 1
+    val = b & 0x7F
+    while b & 0x80:
         if offset >= len(data):
-            raise PackError("Unexpected EOF reading signed varint")
+            raise PackError("Unexpected EOF reading OFS_DELTA offset continuation")
         b = data[offset]
         offset += 1
-        val |= (b & 0x7F) << shift
-        if not (b & 0x80):
-            break
-        shift += 7
-    # MSB of first byte is sign bit for negative offset
+        val = ((val + 1) << 7) | (b & 0x7F)
     return val, offset
 
 
@@ -376,9 +383,9 @@ def read_pack(store: ObjectStore, data: bytes) -> int:
             staged_by_sha[sha] = (type_str, raw)
             
         elif obj_type == 6:  # OFS_DELTA
-            # Read negative offset varint
-            neg_offset, offset = _read_varint_signed(data, offset)
-            base_offset = obj_offset - neg_offset
+            # Read OFS_DELTA base offset (git's special encoding)
+            ofs_delta_offset, offset = _read_ofs_delta_offset(data, offset)
+            base_offset = obj_offset - ofs_delta_offset
             if base_offset not in staged_by_offset:
                 raise PackError(f"OFS_DELTA base at offset {base_offset} not found")
             base_type, base_data = staged_by_offset[base_offset]
