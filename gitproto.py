@@ -378,6 +378,8 @@ def upload_pack_v2(repo: Any, body: bytes) -> bytes:
             line = payload.decode("utf-8", errors="replace").strip()
             if line == "command=fetch":
                 state = "caps"
+            elif line == "command=ls-refs":
+                return ls_refs(repo, body)
             continue
         if state == "caps":
             if kind == "delim":

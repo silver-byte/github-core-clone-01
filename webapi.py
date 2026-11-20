@@ -867,7 +867,8 @@ def _handle_contents_put(
         "size": len(content),
         "type": "file",
     }
-    return 201, base_headers + [("Content-Type", "application/json; charset=utf-8")], json.dumps({
+    status = 200 if existing_sha else 201
+    return status, base_headers + [("Content-Type", "application/json; charset=utf-8")], json.dumps({
         "content": file_entry,
         "commit": {"sha": commit_sha},
     }, separators=(",", ":")).encode()
