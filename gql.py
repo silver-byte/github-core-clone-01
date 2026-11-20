@@ -877,7 +877,9 @@ def execute(context: ExecContext, type_name: str, payload: Any, selection_set: L
         
         if sel.name.startswith("__"):
             if sel.name == "__type":
-                type_name_arg = args.get("name")
+                # Resolve arguments from the selection, like resolve_field does
+                sel_args = {arg.name: resolve_value(context, arg.value) for arg in sel.args}
+                type_name_arg = sel_args.get("name")
                 if type_name_arg:
                     result[sel.alias or sel.name] = type_object(type_name_arg)
                 else:
@@ -919,12 +921,30 @@ def execute(context: ExecContext, type_name: str, payload: Any, selection_set: L
         if sel.selection_set and value is not None and not isinstance(value, list):
             field_type = get_field_type(type_name, sel.name)
             if field_type:
+                # If the field resolves to the abstract "Node" type, determine the concrete type
+                # from the payload value so inline fragments and plain fields resolve correctly.
+                if field_type == "Node":
+                    field_type = _concrete_type_from_payload(value)
                 value = execute(context, field_type, value, sel.selection_set, depth + 1)
         
         key = sel.alias or sel.name
         result[key] = value
     
     return result
+
+
+def _concrete_type_from_payload(payload: Any) -> str:
+    """Determine the concrete GraphQL type from a Node payload value."""
+    if isinstance(payload, Repo):
+        return "Repository"
+    if isinstance(payload, tuple) and len(payload) == 2:
+        # (repo, issue) or (repo, pull)
+        if isinstance(payload[1], dict):
+            if "number" in payload[1] and "head_ref" in payload[1]:
+                return "PullRequest"
+            if "number" in payload[1]:
+                return "Issue"
+    return "Repository"
 
 
 def resolve_field(context: ExecContext, type_name: str, payload: Any, sel: Selection) -> Any:
