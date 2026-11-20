@@ -7,6 +7,7 @@ import os
 import time
 import hashlib
 import difflib
+import threading
 from typing import Dict, List, Optional, Any, Tuple, Union
 
 from gitcore import (
@@ -111,6 +112,7 @@ class Store:
         self.next_issue_db = 1
         self.next_pull_db = 1
         self.next_comment_id = 1
+        self.lock = threading.RLock()
 
     def login_for_token(self, token: Optional[str]) -> Optional[str]:
         if token is None:

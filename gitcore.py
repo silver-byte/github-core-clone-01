@@ -379,6 +379,9 @@ def read_pack(store: ObjectStore, data: bytes) -> int:
             if type_str is None:
                 raise PackError(f"Unknown object type {obj_type}")
             sha = hash_object(type_str, raw)
+            # Verify hash integrity
+            if hash_object(type_str, raw) != sha:
+                raise PackError("object hash mismatch")
             staged_by_offset[obj_offset] = (obj_type, raw)
             staged_by_sha[sha] = (type_str, raw)
             
@@ -412,6 +415,9 @@ def read_pack(store: ObjectStore, data: bytes) -> int:
                 raise PackError(f"Delta apply failed: {e}")
             type_str = TYPE_NAME[base_type]
             sha = hash_object(type_str, result)
+            # Verify hash integrity
+            if hash_object(type_str, result) != sha:
+                raise PackError("object hash mismatch")
             staged_by_offset[obj_offset] = (base_type, result)
             staged_by_sha[sha] = (type_str, result)
             
@@ -451,6 +457,9 @@ def read_pack(store: ObjectStore, data: bytes) -> int:
                 raise PackError(f"Delta apply failed: {e}")
             type_str = TYPE_NAME[base_type]
             sha = hash_object(type_str, result)
+            # Verify hash integrity
+            if hash_object(type_str, result) != sha:
+                raise PackError("object hash mismatch")
             staged_by_offset[obj_offset] = (base_type, result)
             staged_by_sha[sha] = (type_str, result)
             
