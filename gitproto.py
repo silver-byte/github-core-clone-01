@@ -286,8 +286,13 @@ def _fetch_plan(
             want_commits.append(w)
     
     # BFS from wants by generation
+    # Shallow-boundary commits ARE traversed when deepen is not None; when deepen is None they are treated like have_closure
+    # Never traverse INTO have_closure commits
     included: Dict[str, int] = {}  # sha -> gen
     queue: List[Tuple[str, int]] = [(w, 1) for w in want_commits]
+    
+    # Build shallow set for quick lookup
+    shallow_set = set(s for s in shallow if store.has(s))
     
     while queue:
         sha, gen = queue.pop(0)
@@ -313,10 +318,14 @@ def _fetch_plan(
     # Hold commits: haves and shallow tips that exist
     hold_commits = set(h for h in haves if store.has(h)) | set(s for s in shallow if store.has(s))
     
-    # Objects to send: closure of included commits minus closure of hold commits minus closure of excluded
-    included_tips = set(included.keys())
+    # Included commits minus have_closure
+    included_commits = set(included.keys()) - have_closure
+    
+    # Objects to send: closure of included commits minus closure of hold tips (haves UNION shallow) minus closure of excluded
+    included_tips = included_commits
     send_objects_set = closure_objects(store, included_tips)
     
+    hold_commits = set(h for h in haves if store.has(h)) | set(s for s in shallow if store.has(s))
     hold_objects = closure_objects(store, hold_commits)
     excluded_objects = closure_objects(store, excluded)
     
@@ -334,22 +343,22 @@ def _fetch_plan(
     unshallow: Set[str] = set()
     
     if deepen is not None:
-        # Commits at exactly deepen with parent outside included/excluded
+        # Commits at exactly deepen with parent outside included and not in have_closure
         for sha, gen in included.items():
             if gen != deepen:
                 continue
             parents = commit_parents(store, sha)
             has_outside_parent = False
             for p in parents:
-                if p not in included and p not in excluded and store.has(p):
+                if p not in included and p not in have_closure and store.has(p):
                     has_outside_parent = True
                     break
             if has_outside_parent:
                 new_boundary.add(sha)
         
-        # Old shallow commits that were not visited nor excluded (stay boundary)
+        # Old shallow commits that are not in included and not in have_closure
         for s in shallow:
-            if store.has(s) and s not in included and s not in excluded:
+            if store.has(s) and s not in included and s not in have_closure:
                 new_boundary.add(s)
         
         # Unshallow: old shallow commits that are in included with gen < deepen

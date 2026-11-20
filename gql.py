@@ -292,7 +292,10 @@ class Parser:
                     frag = self._parse_fragment()
                     fragments[frag.name] = frag
                 else:
-                    raise ValueError(f"Unexpected keyword: {kw}")
+                    # Could be a query without the 'query' keyword, starting with a field
+                    # Put the token back and parse as anonymous query
+                    self.pos -= 1
+                    operations.append(self._parse_operation("query"))
             elif self.match("LBRACE"):
                 # Anonymous shorthand query operation
                 self.pos -= 1  # Go back to the LBRACE
@@ -304,32 +307,46 @@ class Parser:
     
     def _parse_operation(self, op_type: str) -> OperationDefinition:
         name = None
+        selection_set = None
+        
         if self.current().type == "NAME":
-            name = self.advance().value
+            # Check if this is an operation name or a field
+            next_pos = self.pos + 1
+            if next_pos < len(self.tokens):
+                next_token = self.tokens[next_pos]
+                if next_token.type in ("LBRACE", "LPAREN"):
+                    # This is a field, not an operation name. Treat as anonymous query.
+                    name = None
+                    # Parse the selection set starting from this field
+                    selection_set = self._parse_selection_set()
+                else:
+                    name = self.advance().value
+            else:
+                name = self.advance().value
         
-        variable_definitions = []
-        if self.match("LPAREN"):
-            while not self.match("RPAREN"):
-                # Skip variable definitions for now
-                if self.current().type == "DOLLAR":
-                    self.advance()
-                    self.expect("NAME")
-                    if self.match("COLON"):
-                        self._parse_type()
-                    if self.match("EQUALS"):
-                        self._parse_value()
-                if not self.match("COMMA"):
-                    break
+        if selection_set is None:
+            variable_definitions = []
+            if self.match("LPAREN"):
+                while not self.match("RPAREN"):
+                    if self.current().type == "DOLLAR":
+                        self.advance()
+                        self.expect("NAME")
+                        if self.match("COLON"):
+                            self._parse_type()
+                        if self.match("EQUALS"):
+                            self._parse_value()
+                    if not self.match("COMMA"):
+                        break
+            
+            directives = []
+            while self.match("AT"):
+                directives.append(self._parse_directive())
+            
+            self.expect("LBRACE")
+            selection_set = self._parse_selection_set()
+            self.expect("RBRACE")
         
-        directives = []
-        while self.match("AT"):
-            directives.append(self._parse_directive())
-        
-        self.expect("LBRACE")
-        selection_set = self._parse_selection_set()
-        self.expect("RBRACE")
-        
-        return OperationDefinition(op_type, name, variable_definitions, directives, selection_set)
+        return OperationDefinition(op_type, name, [], [], selection_set)
     
     def _parse_fragment(self) -> FragmentDefinition:
         name = self.expect("NAME").value
@@ -463,9 +480,13 @@ class Parser:
         elif tok.type == "LBRACKET":
             self.advance()
             items = []
-            while not self.match("RBRACKET"):
+            while True:
+                if self.match("RBRACKET"):
+                    break
                 items.append(self._parse_value())
                 if not self.match("COMMA"):
+                    # Expect RBRACKET next
+                    self.expect("RBRACKET")
                     break
             return items
         elif tok.type == "LBRACE":
@@ -856,7 +877,11 @@ def execute(context: ExecContext, type_name: str, payload: Any, selection_set: L
         
         if sel.name.startswith("__"):
             if sel.name == "__type":
-                result[sel.alias or sel.name] = None
+                type_name_arg = args.get("name")
+                if type_name_arg:
+                    result[sel.alias or sel.name] = type_object(type_name_arg)
+                else:
+                    result[sel.alias or sel.name] = None
             elif sel.name == "__schema":
                 result[sel.alias or sel.name] = schema_object()
             continue
@@ -971,9 +996,13 @@ def resolve_query(context: ExecContext, payload: Any, sel: Selection, args: Dict
                         for repo in context.store.repos.values():
                             if str(repo.db_id) == db_id:
                                 if kind == "Issue":
-                                    return repo.issues.get(int(num))
+                                    if int(num) in repo.issues:
+                                        return (repo, repo.issues[int(num)])
+                                    return None
                                 else:
-                                    return repo.pulls.get(int(num))
+                                    if int(num) in repo.pulls:
+                                        return (repo, repo.pulls[int(num)])
+                                    return None
         return None
     return None
 

@@ -878,5 +878,6 @@ def diff_trees(
         new_mode_sha = new_map.get(path)
         old_sha = old_mode_sha[1] if old_mode_sha else None
         new_sha = new_mode_sha[1] if new_mode_sha else None
-        result[path] = (old_sha, new_sha)
+        if old_sha != new_sha:
+            result[path] = (old_sha, new_sha)
     return result

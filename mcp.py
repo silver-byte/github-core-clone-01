@@ -445,6 +445,11 @@ def _handle_single_request(store: Store, login: str, request: Dict) -> Tuple[Opt
     elif method == "tools/call":
         name = params.get("name", "")
         arguments = params.get("arguments", {})
+        resolved = _resolve_tool_name(name)
+        if not resolved:
+            if is_notification:
+                return None, []
+            return _jsonrpc_error(id_val, -32601, f"Tool {name} not found"), []
         tool_result = handle_tools_call(store, login, name, arguments)
         if tool_result.get("isError"):
             result = tool_result
