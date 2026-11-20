@@ -204,12 +204,14 @@ def ls_refs(repo: Any, body: bytes) -> bytes:
     if want_symrefs or want_unborn:
         head_oid = refs.get(repo.head_ref, ZERO_SHA)
         if head_oid == ZERO_SHA:
-            head_oid = ZERO_SHA
-        line = f"{head_oid} HEAD"
-        if want_symrefs:
-            line += f" symref-target:{repo.head_ref}"
-        if want_unborn and head_oid == ZERO_SHA:
-            line += " unborn"
+            if want_symrefs:
+                line = f"unborn HEAD symref-target:{repo.head_ref}"
+            else:
+                line = "unborn HEAD"
+        else:
+            line = f"{head_oid} HEAD"
+            if want_symrefs:
+                line += f" symref-target:{repo.head_ref}"
         out.extend(pkt_text(line + "\n"))
     
     # Refs sorted by name
