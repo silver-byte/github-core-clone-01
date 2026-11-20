@@ -752,12 +752,22 @@ def validate_selection(
     
     fields = OBJECT_TYPES.get(type_name, {})
     
-    for sel in selection_set:
+    i = 0
+    n = len(selection_set)
+    while i < n:
+        sel = selection_set[i]
+        i += 1
         if sel.name == "__typename":
             continue
         if sel.name.startswith("__"):
             continue
-        # Skip fragment spreads and inline fragments (they start with ...)
+        # Inline fragment marker "...on": the NEXT sibling is the fragment body,
+        # named after the type condition; skip it too (not a real field).
+        if sel.name == "...on" or sel.name == "... on":
+            if i < n:
+                i += 1  # skip the type-named fragment sibling
+            continue
+        # Skip fragment spreads and named inline fragments (they start with ...)
         if sel.name.startswith("..."):
             continue
         
