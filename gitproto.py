@@ -9,6 +9,7 @@ from gitcore import (
     read_pack,
     write_pack,
     parse_commit,
+    parse_tree,
     commit_parents,
     is_ancestor,
     reachable_objects,
@@ -252,6 +253,34 @@ def _collect_ancestors(store: ObjectStore, tips: List[str]) -> Set[str]:
     return closure
 
 
+def _commit_tree_objects(store: ObjectStore, commits: Set[str]) -> Set[str]:
+    """Collect each commit plus its tree closure (no commit ancestry).
+
+    A shallow commit's own commit + tree objects are held by the client; its
+    ancestor commits are NOT. This is the "cut closure" used for the held
+    subtraction when shallow lines are present.
+    """
+    objects: Set[str] = set()
+    stack: List[str] = list(commits)
+    while stack:
+        sha = stack.pop()
+        if sha in objects:
+            continue
+        objects.add(sha)
+        if not store.has(sha):
+            continue
+        obj_type, data = store.get(sha)
+        if obj_type == "commit":
+            tree = parse_commit(data)["tree"]
+            if tree not in objects:
+                stack.append(tree)
+        elif obj_type == "tree":
+            for _, _, entry_sha in parse_tree(data):
+                if entry_sha not in objects:
+                    stack.append(entry_sha)
+    return objects
+
+
 def _fetch_plan(
     repo: Any,
     wants: List[str],
@@ -260,15 +289,53 @@ def _fetch_plan(
     deepen: Optional[int],
     deepen_not: List[str],
 ) -> Tuple[List[str], Set[str], Set[str]]:
-    """Compute fetch plan: objects to send, new boundary, unshallow."""
+    """Compute fetch plan: objects to send, new boundary, unshallow.
+
+    Rule (no shallow lines): send set is the full ancestor closure of the wants
+    minus the full closure of the haves.
+
+    Rule (shallow lines present): the held subtraction uses cut closures (a
+    shallow commit's own commit+tree objects are held, its ancestors are NOT),
+    and the plan expands through shallow boundaries up to the deepen limit so
+    newly revealed ancestors (e.g. the parent of a shallow tip) ARE sent.
+    """
     store = repo.objects
-    
-    # Have closure (commits the client has)
-    have_closure = _collect_ancestors(store, [h for h in haves if store.has(h)])
-    
-    # Excluded commits (deepen-not)
-    excluded = have_closure | _collect_ancestors(store, [d for d in deepen_not if store.has(d)])
-    
+
+    # Shallow set
+    shallow_set = set(s for s in shallow if store.has(s))
+
+    # Held commits: what the client already holds, cut at shallow boundaries.
+    # Walk from haves; when we reach a shallow commit, keep it but do NOT
+    # expand its parents (the client does not hold its ancestors).
+    held_commits: Set[str] = set()
+    held_stack: List[str] = [h for h in haves if store.has(h)]
+    while held_stack:
+        sha = held_stack.pop()
+        if sha in held_commits:
+            continue
+        if not store.has(sha):
+            continue
+        obj_type, _ = store.get(sha)
+        if obj_type != "commit":
+            continue
+        held_commits.add(sha)
+        if sha in shallow_set:
+            continue  # do not expand past a shallow boundary
+        for p in commit_parents(store, sha):
+            if p not in held_commits:
+                held_stack.append(p)
+
+    # Every shallow commit is held by the client too.
+    held_commits |= shallow_set
+
+    # deepen-not: the client holds these and does not want their ancestors.
+    held_commits |= _collect_ancestors(store, [d for d in deepen_not if store.has(d)])
+
+    # Commits the client holds that are NOT shallow: stop points (never send,
+    # never expand past). Shallow commits are allowed through so their newly
+    # revealed ancestors get walked and sent.
+    stop_set = held_commits - shallow_set
+
     # Handle tag wants: if a want is a tag, include the tag and peel to commit
     want_commits: List[str] = []
     want_tags: List[str] = []
@@ -278,94 +345,83 @@ def _fetch_plan(
         obj_type, _ = store.get(w)
         if obj_type == "tag":
             want_tags.append(w)
-            # Peel to commit
             peeled = _peel_tag(store, w)
             if peeled:
                 want_commits.append(peeled)
         elif obj_type == "commit":
             want_commits.append(w)
-    
-    # BFS from wants by generation
-    # Shallow-boundary commits ARE traversed when deepen is not None; when deepen is None they are treated like have_closure
-    # Never traverse INTO have_closure commits
+
+    # BFS from wants by generation. Expand through shallow boundaries up to the
+    # deepen limit so ancestors of shallow tips are revealed and sent.
     included: Dict[str, int] = {}  # sha -> gen
     queue: List[Tuple[str, int]] = [(w, 1) for w in want_commits]
-    
-    # Build shallow set for quick lookup
-    shallow_set = set(s for s in shallow if store.has(s))
-    
+
     while queue:
         sha, gen = queue.pop(0)
         if sha in included:
-            continue
-        if sha in excluded:
             continue
         if not store.has(sha):
             continue
         obj_type, _ = store.get(sha)
         if obj_type != "commit":
             continue
-        
+        if sha in stop_set:
+            continue
+        # A shallow tip with no deepen request is a stop point (client has it
+        # and asked us not to go deeper).
+        if deepen is None and sha in shallow_set:
+            continue
+
         included[sha] = gen
-        
+
         if deepen is not None and gen >= deepen:
             continue
-        
+
         for p in commit_parents(store, sha):
-            if p not in included and p not in excluded:
+            if p not in included and p not in stop_set:
                 queue.append((p, gen + 1))
-    
-    # Hold commits: haves and shallow tips that exist
-    hold_commits = set(h for h in haves if store.has(h)) | set(s for s in shallow if store.has(s))
-    
-    # Included commits minus have_closure
-    included_commits = set(included.keys()) - have_closure
-    
-    # Objects to send: closure of included commits minus closure of hold tips (haves UNION shallow) minus closure of excluded
-    included_tips = included_commits
-    send_objects_set = closure_objects(store, included_tips)
-    
-    hold_commits = set(h for h in haves if store.has(h)) | set(s for s in shallow if store.has(s))
-    hold_objects = closure_objects(store, hold_commits)
-    excluded_objects = closure_objects(store, excluded)
-    
-    send_objects_set -= hold_objects
-    send_objects_set -= excluded_objects
-    
+
+    use_cut = bool(shallow_set)
+
+    if use_cut:
+        send_objects_set = _commit_tree_objects(store, set(included.keys()))
+        held_objects = _commit_tree_objects(store, held_commits)
+    else:
+        send_objects_set = closure_objects(store, set(included.keys()))
+        held_objects = closure_objects(store, held_commits)
+
+    send_objects_set -= held_objects
+
     # Add want tags themselves
     for t in want_tags:
         send_objects_set.add(t)
-    
+
     send_objects = sorted(send_objects_set)
-    
+
     # New boundary (only when deepen is not None)
     new_boundary: Set[str] = set()
     unshallow: Set[str] = set()
-    
+
     if deepen is not None:
-        # Commits at exactly deepen with parent outside included and not in have_closure
+        # Commits at exactly deepen with a parent outside included and not held
         for sha, gen in included.items():
             if gen != deepen:
                 continue
-            parents = commit_parents(store, sha)
-            has_outside_parent = False
-            for p in parents:
-                if p not in included and p not in have_closure and store.has(p):
-                    has_outside_parent = True
+            for p in commit_parents(store, sha):
+                if p not in included and p not in held_commits and store.has(p):
+                    new_boundary.add(sha)
                     break
-            if has_outside_parent:
-                new_boundary.add(sha)
-        
-        # Old shallow commits that are not in included and not in have_closure
+
+        # Old shallow commits not in included and not held
         for s in shallow:
-            if store.has(s) and s not in included and s not in have_closure:
+            if store.has(s) and s not in included and s not in held_commits:
                 new_boundary.add(s)
-        
+
         # Unshallow: old shallow commits that are in included with gen < deepen
         for s in shallow:
             if s in included and included[s] < deepen:
                 unshallow.add(s)
-    
+
     return send_objects, new_boundary, unshallow
 
 
@@ -423,27 +479,28 @@ def upload_pack_v2(repo: Any, body: bytes) -> bytes:
     effective_wants = [w for w in wants if w != ZERO_SHA and repo.objects.has(w)]
     if not effective_wants:
         return FLUSH
-    
+
     send_objects, new_boundary, unshallow = _fetch_plan(repo, effective_wants, haves, shallow, deepen, deepen_not)
-    
+
     # Build pack
     pack = None
     if send_objects or not haves:
         pack = write_pack(repo.objects, send_objects)
-    
+
     sections: List[bytes] = []
-    
-    # Acknowledgments - only when no packfile is sent
-    if haves and pack is None:
+
+    # Acknowledgments - only when the request had haves. Comes FIRST.
+    if haves:
         ack_data = bytearray()
         ack_data.extend(pkt_text("acknowledgments\n"))
         common = [h for h in haves if repo.objects.has(h)]
-        if common:
-            ack_data.extend(pkt_text(f"ACK {common[0]}\n"))
-        else:
-            ack_data.extend(pkt_text("NAK\n"))
+        for c in common:
+            ack_data.extend(pkt_text(f"common {c}\n"))
+        # "ready" line only when a packfile section follows
+        if pack is not None:
+            ack_data.extend(pkt_text("ready\n"))
         sections.append(bytes(ack_data))
-    
+
     # Shallow info
     if new_boundary or unshallow:
         si_data = bytearray()
@@ -453,7 +510,7 @@ def upload_pack_v2(repo: Any, body: bytes) -> bytes:
         for sha in sorted(unshallow):
             si_data.extend(pkt_text(f"unshallow {sha}\n"))
         sections.append(bytes(si_data))
-    
+
     # Packfile
     if pack is not None:
         pf_data = bytearray()

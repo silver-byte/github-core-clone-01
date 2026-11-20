@@ -6,6 +6,7 @@ import os
 import sys
 import json
 import time
+import socket
 import threading
 import urllib.request
 import urllib.error
@@ -20,6 +21,15 @@ import webapi
 class _Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "forge/1.0"
+
+    def setup(self) -> None:
+        super().setup()
+        try:
+            self.connection.setsockopt(
+                socket.IPPROTO_TCP, socket.TCP_NODELAY, 1
+            )
+        except OSError:
+            pass
 
     def do_GET(self) -> None:
         self._handle()
