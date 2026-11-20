@@ -756,95 +756,62 @@ def tree_update(
     if not parts:
         raise ValueError("Empty path")
     
-    # Start from existing tree or empty
-    if tree_sha is None or tree_sha == "":
-        cur_entries: Dict[str, Tuple[str, str]] = {}
-    else:
-        if not store.has(tree_sha):
-            cur_entries = {}
+    def _update(entries: Dict[str, Tuple[str, str]], parts: List[str], blob_sha: Optional[str]) -> str:
+        """Recursively update tree entries. Returns new tree SHA."""
+        if len(parts) == 1:
+            # Leaf level: set or delete the entry
+            name = parts[0]
+            if blob_sha is None:
+                # Delete
+                if name in entries:
+                    del entries[name]
+            else:
+                # Set file
+                entries[name] = ("100644", blob_sha)
         else:
-            obj_type, data = store.get(tree_sha)
-            if obj_type != "tree":
-                cur_entries = {}
+            # Intermediate level: recurse into subtree
+            name = parts[0]
+            sub_sha = None
+            if name in entries:
+                mode, sha = entries[name]
+                if mode == "40000":
+                    sub_sha = sha
+            
+            # Get sub-entries
+            sub_entries: Dict[str, Tuple[str, str]] = {}
+            if sub_sha and store.has(sub_sha):
+                obj_type, data = store.get(sub_sha)
+                if obj_type == "tree":
+                    sub_entries = _tree_entries_to_dict(parse_tree(store.get_data(sub_sha)))
+            
+            # Recurse
+            new_sub_sha = _update(sub_entries, parts[1:], blob_sha)
+            
+            # Handle result
+            if new_sub_sha == ZERO_SHA or (blob_sha is None and new_sub_sha == _empty_tree_sha(store)):
+                # Subtree became empty - remove the entry
+                if name in entries:
+                    del entries[name]
             else:
-                cur_entries = _tree_entries_to_dict(parse_tree(data))
-    
-    # Navigate to parent directory, creating intermediate trees
-    def get_or_create_tree(entries: Dict[str, Tuple[str, str]], name: str) -> Dict[str, Tuple[str, str]]:
-        if name in entries:
-            mode, sha = entries[name]
-            if mode == "40000":
-                if store.has(sha):
-                    obj_type, data = store.get(sha)
-                    if obj_type == "tree":
-                        return _tree_entries_to_dict(parse_tree(data))
-        # Create new empty tree
-        new_sha = store.add("tree", build_tree([]))
-        entries[name] = ("40000", new_sha)
-        return {}
-    
-    # Walk to parent
-    parent_entries = cur_entries
-    for part in parts[:-1]:
-        parent_entries = get_or_create_tree(parent_entries, part)
-    
-    # Update final entry
-    filename = parts[-1]
-    if blob_sha is None:
-        # Delete
-        if filename in parent_entries:
-            del parent_entries[filename]
-    else:
-        # Set file
-        parent_entries[filename] = ("100644", blob_sha)
-    
-    # Rebuild trees bottom-up
-    def build_tree_from_entries(entries: Dict[str, Tuple[str, str]]) -> str:
-        # First build any subtrees
-        tree_entries = []
-        for name, (mode, sha) in entries.items():
-            if mode == "40000":
-                # This is a tree reference, sha should already be correct
-                tree_entries.append((mode, name, sha))
-            else:
-                tree_entries.append((mode, name, sha))
+                entries[name] = ("40000", new_sub_sha)
+        
+        # Build and return new tree SHA
+        tree_entries = [(mode, name, sha) for name, (mode, sha) in entries.items()]
         return store.add("tree", build_tree(tree_entries))
     
-    # We need to rebuild from the bottom up. Let's do a recursive approach.
-    def update_recursive(entries: Dict[str, Tuple[str, str]], idx: int) -> Tuple[str, Dict[str, Tuple[str, str]]]:
-        if idx >= len(parts):
-            return "", entries  # Should not happen
-        
-        name = parts[idx]
-        if idx == len(parts) - 1:
-            # This is the level we modified
-            new_sha = build_tree_from_entries(entries)
-            return new_sha, entries
-        else:
-            # Need to recurse into subtree
-            mode, sha = entries[name]
-            if mode != "40000":
-                # Should not happen, we created it as tree
-                sub_entries = {}
-            else:
-                if store.has(sha):
-                    obj_type, data = store.get(sha)
-                    if obj_type == "tree":
-                        sub_entries = _tree_entries_to_dict(parse_tree(data))
-                    else:
-                        sub_entries = {}
-                else:
-                    sub_entries = {}
-            new_sha, new_sub = update_recursive(sub_entries, idx + 1)
-            entries[name] = ("40000", new_sha)
-            new_root_sha = build_tree_from_entries(entries)
-            return new_root_sha, entries
+    # Get initial entries
+    entries: Dict[str, Tuple[str, str]] = {}
+    if tree_sha and store.has(tree_sha):
+        obj_type, data = store.get(tree_sha)
+        if obj_type == "tree":
+            entries = _tree_entries_to_dict(parse_tree(data))
     
-    if not parts:
-        return ZERO_SHA
-    
-    new_root, _ = update_recursive(cur_entries, 0)
-    return new_root
+    return _update(entries, parts, blob_sha)
+
+
+def _empty_tree_sha(store: ObjectStore) -> str:
+    """Get the SHA of an empty tree."""
+    return store.add("tree", build_tree([]))
 
 
 def tree_from_flat(store: ObjectStore, files: Dict[str, str]) -> str:

@@ -110,34 +110,39 @@ def advertise(repo: Optional[Any], service: str, version2: bool) -> bytes:
         out.extend(FLUSH)
         return bytes(out)
     
-    # version 0
+# version 0
     out.extend(pkt_text(f"# service={service}\n"))
     out.extend(FLUSH)
     
     store = repo.objects
     refs = dict(repo.refs)
     
-    # HEAD first
-    head_target = repo.head_ref
-    head_oid = refs.get(head_target, ZERO_SHA)
-    if head_oid == ZERO_SHA:
-        head_oid = ZERO_SHA
+    # Default branch for symref
+    default_branch = repo.default_branch if hasattr(repo, 'default_branch') else "main"
+    symref_cap = f"symref=HEAD:refs/heads/{default_branch}"
     
     if service == "git-upload-pack":
-        caps = "multi_ack thin-pack side-band side-band-64k ofs-delta deepen-since deepen-not"
+        caps = f"multi_ack thin-pack side-band side-band-64k ofs-delta deepen-since deepen-not {symref_cap}"
     else:
-        caps = "report-status side-band-64k delete-refs"
-    
-    first_line = f"{head_oid} HEAD\0{caps}\n"
-    out.extend(pkt_text(first_line))
-    
-    # All refs sorted
-    for refname in sorted(refs.keys()):
-        oid = refs[refname]
-        out.extend(pkt_text(f"{oid} {refname}\n"))
+        caps = f"report-status side-band-64k delete-refs {symref_cap}"
     
     if not refs:
-        out.extend(pkt_text(f"{ZERO_SHA} capabilities^{{}}\0{caps}\n"))
+        # Empty repo: ONLY the capabilities^{} line
+        out.extend(pkt_text(f"{ZERO_SHA} capabilities^{{\}}\0{caps}\n"))
+    else:
+        # Non-empty repo: HEAD line with caps, then refs
+        head_target = repo.head_ref
+        head_oid = refs.get(head_target, ZERO_SHA)
+        if head_oid == ZERO_SHA:
+            head_oid = ZERO_SHA
+        
+        first_line = f"{head_oid} HEAD\0{caps}\n"
+        out.extend(pkt_text(first_line))
+        
+        # All refs sorted
+        for refname in sorted(refs.keys()):
+            oid = refs[refname]
+            out.extend(pkt_text(f"{oid} {refname}\n"))
     
     out.extend(FLUSH)
     return bytes(out)
