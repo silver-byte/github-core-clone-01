@@ -399,6 +399,10 @@ def dispatch(
     token = _parse_auth(headers)
     login = store.login_for_token(token) if token else None
     
+    # MCP endpoint (before git endpoints since it's not under /api)
+    if path.startswith("/mcp"):
+        return _handle_mcp(store, method, path, query, headers, body, base_headers, login, token)
+    
     # Git endpoints (not under /api)
     if not path.startswith("/api/"):
         return _handle_git_endpoints(store, repo_for_git(path), method, path, query, headers, body, base_headers, login)
@@ -409,9 +413,6 @@ def dispatch(
     
     if path.startswith("/api/graphql"):
         return _handle_graphql(store, method, path, query, headers, body, base_headers, login, token)
-    
-    if path.startswith("/mcp"):
-        return _handle_mcp(store, method, path, query, headers, body, base_headers, login, token)
     
     return err(404, "Not Found")
 
@@ -1503,14 +1504,14 @@ def _handle_mcp(
     method: str,
     path: str,
     query: Dict[str, List[str]],
-    headers: List[Tuple[str, str]],
+    headers: Dict[str, str],
     body: bytes,
     base_headers: List[Tuple[str, str]],
     login: Optional[str],
     token: Optional[str],
 ) -> Tuple[int, List[Tuple[str, str]], bytes]:
     """Handle /mcp."""
-    if not any(k.lower() == "authorization" for k, _ in headers):
+    if not any(k.lower() == "authorization" for k in headers):
         return err(401, "Requires authentication")
     if method != "POST":
         return err(405, "Method Not Allowed")

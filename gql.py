@@ -135,8 +135,7 @@ class Lexer:
             return
         
         # Punctuation
-        two_char = self.text[self.pos:self.pos+2]
-        if two_char in ("...",):
+        if self.text[self.pos:self.pos+3] == "...":
             self.tokens.append(Token("SPREAD", "...", start_line, start_col))
             self.pos += 3
             self.col += 3
@@ -294,6 +293,10 @@ class Parser:
                     fragments[frag.name] = frag
                 else:
                     raise ValueError(f"Unexpected keyword: {kw}")
+            elif self.match("LBRACE"):
+                # Anonymous shorthand query operation
+                self.pos -= 1  # Go back to the LBRACE
+                operations.append(self._parse_operation("query"))
             else:
                 raise ValueError(f"Unexpected token: {self.current().type}")
         
@@ -347,12 +350,32 @@ class Parser:
         selections = []
         while self.current().type != "RBRACE" and self.current().type != "EOF":
             if self.match("SPREAD"):
-                if self.current().type == "NAME":
-                    # Fragment spread - skip for now
-                    self.advance()
+                # Handle fragment spread or inline fragment
+                selections.append(self._parse_fragment_spread())
                 continue
             selections.append(self._parse_selection())
         return selections
+    
+    def _parse_fragment_spread(self) -> Selection:
+        """Parse fragment spread (...FragmentName) or inline fragment (... on TypeName)."""
+        # We've already consumed the SPREAD token
+        if self.match("NAME"):
+            # Named fragment spread: ...FragmentName
+            fragment_name = self.tokens[self.pos - 1].value
+            return Selection(None, f"...{fragment_name}", [], [], None)
+        elif self.match("NAME") and self.tokens[self.pos - 1].value == "on":
+            # Inline fragment: ... on TypeName
+            type_name = self.expect("NAME").value
+            directives = []
+            while self.match("AT"):
+                directives.append(self._parse_directive())
+            selection_set = None
+            if self.match("LBRACE"):
+                selection_set = self._parse_selection_set()
+                self.expect("RBRACE")
+            return Selection(None, f"... on {type_name}", [], directives, selection_set)
+        else:
+            raise ValueError("Expected fragment name or 'on' after '...'")
     
     def _parse_selection(self) -> Selection:
         alias = None
@@ -713,6 +736,9 @@ def validate_selection(
             continue
         if sel.name.startswith("__"):
             continue
+        # Skip fragment spreads and inline fragments (they start with ...)
+        if sel.name.startswith("..."):
+            continue
         
         field_type = fields.get(sel.name)
         if field_type is None:
@@ -835,6 +861,31 @@ def execute(context: ExecContext, type_name: str, payload: Any, selection_set: L
                 result[sel.alias or sel.name] = schema_object()
             continue
         
+        # Handle fragment spreads and inline fragments
+        if sel.name.startswith("..."):
+            if sel.name == "... on ":
+                # This shouldn't happen - inline fragments are parsed with type name
+                pass
+            elif sel.name.startswith("... on "):
+                # Inline fragment: ... on TypeName { ... }
+                inline_type = sel.name[7:]  # Remove "... on "
+                if sel.selection_set:
+                    inline_result = execute(context, inline_type, payload, sel.selection_set, depth + 1)
+                    # Merge inline fragment result into parent result
+                    for k, v in inline_result.items():
+                        result[k] = v
+                continue
+            elif sel.name.startswith("..."):
+                # Named fragment spread: ...FragmentName
+                fragment_name = sel.name[3:]  # Remove "..."
+                if fragment_name in context.fragments:
+                    fragment = context.fragments[fragment_name]
+                    fragment_result = execute(context, fragment.type_condition, payload, fragment.selection_set, depth + 1)
+                    # Merge fragment result into parent result
+                    for k, v in fragment_result.items():
+                        result[k] = v
+                continue
+        
         # Resolve field
         value = resolve_field(context, type_name, payload, sel)
         
@@ -852,7 +903,6 @@ def execute(context: ExecContext, type_name: str, payload: Any, selection_set: L
 
 
 def resolve_field(context: ExecContext, type_name: str, payload: Any, sel: Selection) -> Any:
-    """Resolve a single field."""
     args = {arg.name: resolve_value(context, arg.value) for arg in sel.args}
     
     # Handle connections
@@ -1358,23 +1408,29 @@ def resolve_payload(context: ExecContext, type_name: str, payload: Dict, sel: Se
                 return execute(context, "IssueCommentEdge", edge, sel.selection_set)
         return edge
     
-    # Other payload fields
+    # Other payload fields - return the raw value, let execute handle recursion
     field = sel.name
     if field in payload:
-        val = payload[field]
-        if isinstance(val, tuple) and sel.selection_set:
-            # Get the correct GraphQL type for this payload field
-            field_type = PAYLOAD_FIELDS.get(type_name, {}).get(field)
-            if field_type:
-                return execute(context, field_type, val, sel.selection_set)
-        return val
+        return payload[field]
     return None
 
 
 def resolve_issue(context: ExecContext, payload: Any, sel: Selection, args: Dict) -> Any:
-    if isinstance(payload, list):
-        import traceback
-    repo, issue = payload
+    # Handle both tuple and list payloads
+    if isinstance(payload, (tuple, list)) and len(payload) >= 2:
+        repo, issue = payload[0], payload[1]
+    elif isinstance(payload, dict):
+        # Debug: payload is a dict, try to extract repo and issue
+        # This happens when the tuple is converted to dict somewhere
+        if 'repo' in payload and 'issue' in payload:
+            repo, issue = payload['repo'], payload['issue']
+        elif len(payload) >= 2:
+            items = list(payload.items())
+            repo, issue = items[0][1], items[1][1]
+        else:
+            return f"DEBUG: payload type=dict, keys={list(payload.keys())}"
+    else:
+        return f"DEBUG: payload type={type(payload).__name__}, len={len(payload) if hasattr(payload, '__len__') else 'N/A'}"
     if sel.name == "id":
         return gid("Issue", f"{repo.db_id}:{issue['number']}")
     elif sel.name == "databaseId":

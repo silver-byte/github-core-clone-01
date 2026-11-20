@@ -128,7 +128,7 @@ def advertise(repo: Optional[Any], service: str, version2: bool) -> bytes:
     
     if not refs:
         # Empty repo: ONLY the capabilities^{} line
-        out.extend(pkt_text(f"{ZERO_SHA} capabilities^{{\}}\0{caps}\n"))
+        out.extend(pkt_text(ZERO_SHA + " capabilities^{}\0" + caps + "\n"))
     else:
         # Non-empty repo: HEAD line with caps, then refs
         head_target = repo.head_ref
@@ -424,8 +424,8 @@ def upload_pack_v2(repo: Any, body: bytes) -> bytes:
     
     sections: List[bytes] = []
     
-    # Acknowledgments
-    if haves:
+    # Acknowledgments - only when no packfile is sent
+    if haves and pack is None:
         ack_data = bytearray()
         ack_data.extend(pkt_text("acknowledgments\n"))
         common = [h for h in haves if repo.objects.has(h)]
