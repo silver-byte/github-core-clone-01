@@ -435,6 +435,7 @@ def upload_pack_v2(repo: Any, body: bytes) -> bytes:
     shallow: List[str] = []
     deepen: Optional[int] = None
     deepen_not: List[str] = []
+    done: bool = False
     
     state = "command"
     pos = 0
@@ -473,7 +474,9 @@ def upload_pack_v2(repo: Any, body: bytes) -> bytes:
                     pass
             elif line.startswith("deepen-not "):
                 deepen_not.append(line[11:].split()[0])
-            # ignore other flags: done, thin-pack, no-progress, ofs-delta
+            elif line == "done":
+                done = True
+            # ignore other flags: thin-pack, no-progress, ofs-delta
     
     # Filter out ZERO_SHA and unknown objects
     effective_wants = [w for w in wants if w != ZERO_SHA and repo.objects.has(w)]
@@ -489,13 +492,16 @@ def upload_pack_v2(repo: Any, body: bytes) -> bytes:
 
     sections: List[bytes] = []
 
-    # Acknowledgments - only when the request had haves. Comes FIRST.
-    if haves:
+    # Acknowledgments - only when the request had haves AND did not carry
+    # "done". During a negotiation round (no "done") git reads an
+    # acknowledgments section; on the final round (with "done") git jumps
+    # straight to the packfile/shallow-info sections.
+    if haves and not done:
         ack_data = bytearray()
         ack_data.extend(pkt_text("acknowledgments\n"))
         common = [h for h in haves if repo.objects.has(h)]
         for c in common:
-            ack_data.extend(pkt_text(f"common {c}\n"))
+            ack_data.extend(pkt_text(f"ACK {c}\n"))
         # "ready" line only when a packfile section follows
         if pack is not None:
             ack_data.extend(pkt_text("ready\n"))
@@ -520,6 +526,10 @@ def upload_pack_v2(repo: Any, body: bytes) -> bytes:
             chunk = pack[i:i+65515]
             pf_data.extend(pkt(b"\x01" + chunk))
         sections.append(bytes(pf_data))
+    elif done:
+        # On the final round git always expects a packfile section; send an
+        # empty one when there was nothing new to transmit.
+        sections.append(pkt_text("packfile\n"))
     
     # Join sections with DELIM, end with FLUSH
     for i, section in enumerate(sections):
