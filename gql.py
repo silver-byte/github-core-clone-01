@@ -870,7 +870,12 @@ def execute(context: ExecContext, type_name: str, payload: Any, selection_set: L
         return {"__error": "max depth exceeded"}
     result = {}
     
-    for sel in selection_set:
+    i = 0
+    n = len(selection_set)
+    while i < n:
+        sel = selection_set[i]
+        i += 1
+        
         if sel.name == "__typename":
             result[sel.alias or "__typename"] = type_name
             continue
@@ -888,30 +893,30 @@ def execute(context: ExecContext, type_name: str, payload: Any, selection_set: L
                 result[sel.alias or sel.name] = schema_object()
             continue
         
-        # Handle fragment spreads and inline fragments
-        if sel.name.startswith("..."):
-            if sel.name == "... on ":
-                # This shouldn't happen - inline fragments are parsed with type name
-                pass
-            elif sel.name.startswith("... on "):
-                # Inline fragment: ... on TypeName { ... }
-                inline_type = sel.name[7:]  # Remove "... on "
-                if sel.selection_set:
-                    inline_result = execute(context, inline_type, payload, sel.selection_set, depth + 1)
-                    # Merge inline fragment result into parent result
+        # Inline fragment marker "...on": the NEXT sibling is the fragment body,
+        # named after the type condition. If its name matches the concrete type
+        # of the current payload, execute its selection set and merge; otherwise
+        # it contributes nothing. The marker itself contributes nothing.
+        if sel.name == "...on" or sel.name == "... on":
+            if i < n:
+                frag = selection_set[i]
+                concrete = _concrete_type_from_payload(payload, type_name)
+                if frag.name == concrete and frag.selection_set:
+                    inline_result = execute(context, concrete, payload, frag.selection_set, depth + 1)
                     for k, v in inline_result.items():
                         result[k] = v
-                continue
-            elif sel.name.startswith("..."):
-                # Named fragment spread: ...FragmentName
-                fragment_name = sel.name[3:]  # Remove "..."
-                if fragment_name in context.fragments:
-                    fragment = context.fragments[fragment_name]
-                    fragment_result = execute(context, fragment.type_condition, payload, fragment.selection_set, depth + 1)
-                    # Merge fragment result into parent result
-                    for k, v in fragment_result.items():
-                        result[k] = v
-                continue
+                i += 1  # consume the fragment sibling
+            continue
+        
+        # Named fragment spread: ...FragmentName
+        if sel.name.startswith("..."):
+            fragment_name = sel.name[3:]  # Remove "..."
+            if fragment_name in context.fragments:
+                fragment = context.fragments[fragment_name]
+                fragment_result = execute(context, fragment.type_condition, payload, fragment.selection_set, depth + 1)
+                for k, v in fragment_result.items():
+                    result[k] = v
+            continue
         
         # Resolve field
         value = resolve_field(context, type_name, payload, sel)
@@ -924,7 +929,7 @@ def execute(context: ExecContext, type_name: str, payload: Any, selection_set: L
                 # If the field resolves to the abstract "Node" type, determine the concrete type
                 # from the payload value so inline fragments and plain fields resolve correctly.
                 if field_type == "Node":
-                    field_type = _concrete_type_from_payload(value)
+                    field_type = _concrete_type_from_payload(value, field_type)
                 value = execute(context, field_type, value, sel.selection_set, depth + 1)
         
         key = sel.alias or sel.name
@@ -933,7 +938,7 @@ def execute(context: ExecContext, type_name: str, payload: Any, selection_set: L
     return result
 
 
-def _concrete_type_from_payload(payload: Any) -> str:
+def _concrete_type_from_payload(payload: Any, default_type: str) -> str:
     """Determine the concrete GraphQL type from a Node payload value."""
     if isinstance(payload, Repo):
         return "Repository"
@@ -944,7 +949,7 @@ def _concrete_type_from_payload(payload: Any) -> str:
                 return "PullRequest"
             if "number" in payload[1]:
                 return "Issue"
-    return "Repository"
+    return default_type
 
 
 def resolve_field(context: ExecContext, type_name: str, payload: Any, sel: Selection) -> Any:
