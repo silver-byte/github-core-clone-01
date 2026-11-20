@@ -217,9 +217,9 @@ def parse_json_body(body: bytes) -> Dict[str, Any]:
         raise ValueError("Problems parsing JSON")
 
 
-def _parse_auth(headers: List[Tuple[str, str]]) -> Optional[str]:
+def _parse_auth(headers: Dict[str, str]) -> Optional[str]:
     """Extract token from Authorization header."""
-    for k, v in headers:
+    for k, v in headers.items():
         if k.lower() == "authorization":
             auth = v
             if auth.startswith("Bearer "):
@@ -229,10 +229,10 @@ def _parse_auth(headers: List[Tuple[str, str]]) -> Optional[str]:
     return None
 
 
-def _get_header(headers: List[Tuple[str, str]], name: str, default: str = "") -> str:
+def _get_header(headers: Dict[str, str], name: str, default: str = "") -> str:
     """Get header value by name (case-insensitive)."""
     name_lower = name.lower()
-    for k, v in headers:
+    for k, v in headers.items():
         if k.lower() == name_lower:
             return v
     return default
