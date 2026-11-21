@@ -1083,7 +1083,9 @@ def resolve_mutation(context: ExecContext, payload: Any, sel: Selection, args: D
         }
     
     elif sel.name == "closeIssue":
-        issue_id = input_val.get("id")
+        issue_id = input_val.get("issueId")
+        if issue_id is None:
+            issue_id = input_val.get("id")
         repo, issue = find_issue_by_gid(context.store, issue_id)
         if repo and issue:
             issue["state"] = "closed"
@@ -1338,8 +1340,8 @@ def resolve_issues_connection(context: ExecContext, repo: Repo, args: Dict) -> D
             if cursor_val.startswith("c:"):
                 cursor_num = int(cursor_val[2:])
                 for i, iss in enumerate(issues):
-                    if iss["number"] > cursor_num:
-                        start = i
+                    if iss["number"] == cursor_num:
+                        start = i + 1
                         break
         except Exception:
             pass
@@ -1409,8 +1411,8 @@ def resolve_pull_requests_connection(context: ExecContext, repo: Repo, args: Dic
             if cursor_val.startswith("c:"):
                 cursor_num = int(cursor_val[2:])
                 for i, pr in enumerate(pulls):
-                    if pr["number"] > cursor_num:
-                        start = i
+                    if pr["number"] == cursor_num:
+                        start = i + 1
                         break
         except Exception:
             pass
@@ -1469,14 +1471,6 @@ def resolve_connection(context: ExecContext, type_name: str, payload: Dict, sel:
 def resolve_payload(context: ExecContext, type_name: str, payload: Dict, sel: Selection, args: Dict) -> Any:
     if sel.name == "clientMutationId":
         return payload.get("clientMutationId")
-    
-    if type_name == "AddCommentPayload" and sel.name == "commentEdge":
-        edge = payload.get("commentEdge")
-        if edge and sel.selection_set:
-            # edge has node and cursor
-            if sel.selection_set:
-                return execute(context, "IssueCommentEdge", edge, sel.selection_set)
-        return edge
     
     # Other payload fields - return the raw value, let execute handle recursion
     field = sel.name
