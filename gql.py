@@ -376,7 +376,10 @@ class Parser:
                 # Handle fragment spread or inline fragment
                 selections.append(self._parse_fragment_spread())
                 continue
+            start_pos = self.pos
             selections.append(self._parse_selection())
+            if self.pos == start_pos:
+                raise ValueError(f"Selection parser made no progress at token {self.current().type}")
         return selections
     
     def _parse_fragment_spread(self) -> Selection:
@@ -404,11 +407,12 @@ class Parser:
         alias = None
         name = ""
         
-        if self.current().type == "NAME":
-            name = self.advance().value
-            if self.match("COLON"):
-                alias = name
-                name = self.expect("NAME").value
+        if self.current().type != "NAME":
+            raise ValueError(f"Expected field name, got {self.current().type} at line {self.current().line}")
+        name = self.advance().value
+        if self.match("COLON"):
+            alias = name
+            name = self.expect("NAME").value
         
         args = []
         if self.match("LPAREN"):
@@ -443,8 +447,7 @@ class Parser:
                 self.expect("COLON")
                 arg_value = self._parse_value()
                 args.append(Argument(arg_name, arg_value))
-                if not self.match("COMMA"):
-                    break
+                self.match("COMMA")
         return Directive(name, args)
     
     def _parse_type(self):
