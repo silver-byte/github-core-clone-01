@@ -47,7 +47,7 @@ def _next_req_id() -> str:
 def err(status: int, message: str) -> Tuple[int, List[Tuple[str, str]], bytes]:
     """Return error JSON response."""
     body = json.dumps({"message": message}, separators=(",", ":"))
-    return status, [("Content-Type", "application/json; charset=utf-8")], body.encode()
+    return status, [("X-GitHub-Request-Id", _next_req_id()), ("Content-Type", "application/json; charset=utf-8")], body.encode()
 
 
 def gid(kind: str, key: str) -> str:
@@ -514,7 +514,16 @@ def _handle_api_v3(
         if not name or "/" in name or any(c.isspace() for c in name):
             return err(422, "Repository creation failed.")
         if store.get_repo(login, name):
-            return err(422, "Repository creation failed.")
+            body = json.dumps({
+                "message": "Repository creation failed.",
+                "errors": [{
+                    "resource": "Repository",
+                    "code": "custom",
+                    "field": "name",
+                    "message": "name already exists on this account",
+                }],
+            }, separators=(",", ":"))
+            return 422, base_headers + [("X-GitHub-Request-Id", _next_req_id()), ("Content-Type", "application/json; charset=utf-8")], body.encode()
         description = json_body.get("description", "") or ""
         private = bool(json_body.get("private", False))
         repo = store.create_repo(login, name, description, private)
