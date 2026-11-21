@@ -21,6 +21,10 @@ from gitcore import (
 )
 
 
+class PacketError(Exception):
+    """Raised when a pkt-line payload cannot be parsed as a valid packet."""
+
+
 # pkt-line constants
 FLUSH = b"0000"
 DELIM = b"0001"
@@ -45,11 +49,11 @@ def parse_packets(data: bytes, start: int = 0) -> Generator[Tuple[str, bytes, in
     n = len(data)
     while pos < n:
         if pos + 4 > n:
-            break
+            raise PacketError("pkt-line length prefix truncated")
         try:
             length = int(data[pos:pos+4], 16)
         except ValueError:
-            break
+            raise PacketError("pkt-line length prefix not hex")
         pos += 4
         if length == 0:
             yield ("flush", b"", pos)
@@ -63,7 +67,7 @@ def parse_packets(data: bytes, start: int = 0) -> Generator[Tuple[str, bytes, in
             continue
         payload_len = length - 4
         if pos + payload_len > n:
-            break
+            raise PacketError("pkt-line payload exceeds remaining bytes")
         payload = data[pos:pos+payload_len]
         pos += payload_len
         yield ("data", payload, pos)
@@ -71,12 +75,12 @@ def parse_packets(data: bytes, start: int = 0) -> Generator[Tuple[str, bytes, in
 
 def _read_pkt_line(data: bytes, pos: int) -> Tuple[bytes, int]:
     """Read a single pkt-line, return (payload, new_pos)."""
-    if pos + 4 > len(data):
-        return b"", pos
+    if pos < len(data) and pos + 4 > len(data):
+        raise PacketError("pkt-line length prefix truncated")
     try:
         length = int(data[pos:pos+4], 16)
     except ValueError:
-        return b"", pos
+        raise PacketError("pkt-line length prefix not hex")
     pos += 4
     if length == 0:
         return b"", pos
@@ -86,7 +90,7 @@ def _read_pkt_line(data: bytes, pos: int) -> Tuple[bytes, int]:
         return b"", pos
     payload_len = length - 4
     if pos + payload_len > len(data):
-        return b"", pos
+        raise PacketError("pkt-line payload exceeds remaining bytes")
     payload = data[pos:pos+payload_len]
     pos += payload_len
     return payload, pos
@@ -203,17 +207,18 @@ def ls_refs(repo: Any, body: bytes) -> bytes:
     
     # HEAD line first if symrefs or unborn requested
     if want_symrefs or want_unborn:
-        head_oid = refs.get(repo.head_ref, ZERO_SHA)
-        if head_oid == ZERO_SHA:
-            if want_symrefs:
-                line = f"unborn HEAD symref-target:{repo.head_ref}"
+        if not ref_prefixes or any("HEAD".startswith(p) for p in ref_prefixes):
+            head_oid = refs.get(repo.head_ref, ZERO_SHA)
+            if head_oid == ZERO_SHA:
+                if want_symrefs:
+                    line = f"unborn HEAD symref-target:{repo.head_ref}"
+                else:
+                    line = "unborn HEAD"
             else:
-                line = "unborn HEAD"
-        else:
-            line = f"{head_oid} HEAD"
-            if want_symrefs:
-                line += f" symref-target:{repo.head_ref}"
-        out.extend(pkt_text(line + "\n"))
+                line = f"{head_oid} HEAD"
+                if want_symrefs:
+                    line += f" symref-target:{repo.head_ref}"
+            out.extend(pkt_text(line + "\n"))
     
     # Refs sorted by name
     for refname in sorted(refs.keys()):
@@ -381,7 +386,7 @@ def _fetch_plan(
             if p not in included and p not in stop_set:
                 queue.append((p, gen + 1))
 
-    use_cut = bool(shallow_set)
+    use_cut = bool(shallow_set) or deepen is not None
 
     if use_cut:
         send_objects_set = _commit_tree_objects(store, set(included.keys()))
@@ -488,7 +493,15 @@ def upload_pack_v2(repo: Any, body: bytes) -> bytes:
     # Build pack
     pack = None
     if send_objects or not haves:
-        pack = write_pack(repo.objects, send_objects)
+        cache = repo.__dict__.setdefault("_pack_cache", {})
+        key = tuple(send_objects)
+        if key in cache:
+            pack = cache[key]
+        else:
+            pack = write_pack(repo.objects, send_objects)
+            if len(cache) >= 16:
+                cache.clear()
+            cache[key] = pack
 
     sections: List[bytes] = []
 
@@ -582,9 +595,26 @@ def upload_pack_v0(repo: Any, body: bytes) -> bytes:
         out.extend(FLUSH)
         return bytes(out)
     
-    send_objects, _, _ = _fetch_plan(repo, effective_wants, haves, [], deepen, [])
+    send_objects, new_boundary, unshallow = _fetch_plan(repo, effective_wants, haves, [], deepen, [])
     
-    pack = write_pack(repo.objects, send_objects)
+    # Shallow info (protocol v0 carries these after NAK, before the pack)
+    if deepen is not None:
+        for sha in sorted(new_boundary):
+            out.extend(pkt_text(f"shallow {sha}\n"))
+        for sha in sorted(unshallow):
+            out.extend(pkt_text(f"unshallow {sha}\n"))
+    
+    pack = None
+    if send_objects or not haves:
+        cache = repo.__dict__.setdefault("_pack_cache", {})
+        key = tuple(send_objects)
+        if key in cache:
+            pack = cache[key]
+        else:
+            pack = write_pack(repo.objects, send_objects)
+            if len(cache) >= 16:
+                cache.clear()
+            cache[key] = pack
     
     # Send pack in sideband chunks
     for i in range(0, len(pack), 65515):

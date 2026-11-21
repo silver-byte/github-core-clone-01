@@ -31,6 +31,7 @@ from gitproto import (
     upload_pack_v0,
     receive_pack,
     FLUSH,
+    PacketError,
 )
 from store import Store, Repo, iso_utc, git_ident, BASE_EPOCH
 
@@ -366,13 +367,22 @@ def _handle_git_endpoints(
     
     if path.endswith("/git-upload-pack") and method == "POST":
         if version2:
-            result = upload_pack_v2(repo, body)
+            try:
+                result = upload_pack_v2(repo, body)
+            except PacketError:
+                return 400, base_headers + [("Content-Type", "text/plain")], b"Bad pkt-line\n"
         else:
-            result = upload_pack_v0(repo, body)
+            try:
+                result = upload_pack_v0(repo, body)
+            except PacketError:
+                return 400, base_headers + [("Content-Type", "text/plain")], b"Bad pkt-line\n"
         return 200, base_headers + [("Content-Type", "application/x-git-upload-pack-result")], result
     
     if path.endswith("/git-receive-pack") and method == "POST":
-        result = receive_pack(repo, body)
+        try:
+            result = receive_pack(repo, body)
+        except PacketError:
+            return 400, base_headers + [("Content-Type", "text/plain")], b"Bad pkt-line\n"
         return 200, base_headers + [("Content-Type", "application/x-git-receive-pack-result")], result
     
     return err(404, "Not Found")
