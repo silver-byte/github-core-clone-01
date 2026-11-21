@@ -388,7 +388,10 @@ class Parser:
         if self.match("NAME"):
             # Named fragment spread: ...FragmentName
             fragment_name = self.tokens[self.pos - 1].value
-            return Selection(None, f"...{fragment_name}", [], [], None)
+            directives = []
+            while self.match("AT"):
+                directives.append(self._parse_directive())
+            return Selection(None, f"...{fragment_name}", [], directives, None)
         elif self.match("NAME") and self.tokens[self.pos - 1].value == "on":
             # Inline fragment: ... on TypeName
             type_name = self.expect("NAME").value
@@ -883,6 +886,23 @@ def get_field_type(parent_type: str, field_name: str) -> Optional[str]:
     return None
 
 
+def _should_include(context: ExecContext, directives) -> bool:
+    for directive in directives or []:
+        if directive.name == "skip":
+            for arg in directive.args:
+                if arg.name == "if":
+                    if resolve_value(context, arg.value):
+                        return False
+                    break
+        elif directive.name == "include":
+            for arg in directive.args:
+                if arg.name == "if":
+                    if not resolve_value(context, arg.value):
+                        return False
+                    break
+    return True
+
+
 def execute(context: ExecContext, type_name: str, payload: Any, selection_set: List[Selection], depth: int = 0) -> Dict[str, Any]:
     """Execute a selection set."""
     if depth > 50:
@@ -894,6 +914,10 @@ def execute(context: ExecContext, type_name: str, payload: Any, selection_set: L
     while i < n:
         sel = selection_set[i]
         i += 1
+        
+        if not (sel.name == "...on" or sel.name == "... on"):
+            if not _should_include(context, sel.directives):
+                continue
         
         if sel.name == "__typename":
             result[sel.alias or "__typename"] = type_name
@@ -919,6 +943,9 @@ def execute(context: ExecContext, type_name: str, payload: Any, selection_set: L
         if sel.name == "...on" or sel.name == "... on":
             if i < n:
                 frag = selection_set[i]
+                if not _should_include(context, frag.directives):
+                    i += 1  # consume the fragment sibling
+                    continue
                 concrete = _concrete_type_from_payload(payload, type_name)
                 if frag.name == concrete and frag.selection_set:
                     inline_result = execute(context, concrete, payload, frag.selection_set, depth + 1)
