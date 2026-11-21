@@ -342,6 +342,7 @@ class Parser:
                             self._parse_value()
                     if not self.match("COMMA"):
                         break
+                self.match("RPAREN")
             
             directives = []
             while self.match("AT"):
