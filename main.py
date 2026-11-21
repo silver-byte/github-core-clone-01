@@ -141,6 +141,11 @@ def _wait_done(env_url: str, server: http.server.ThreadingHTTPServer) -> None:
         time.sleep(1)
 
 
+class _ForgeServer(http.server.ThreadingHTTPServer):
+    request_queue_size = 128
+    daemon_threads = True
+
+
 def main() -> int:
     env_url = os.environ.get("MAKEFUN_ENV_URL")
     if not env_url:
@@ -149,7 +154,7 @@ def main() -> int:
     env_url = env_url.rstrip("/")
 
     store = new_store_from_env()
-    server = http.server.ThreadingHTTPServer(("0.0.0.0", 0), _Handler)
+    server = _ForgeServer(("0.0.0.0", 0), _Handler)
     server.daemon_threads = True
     server.forge_store = store
     server.forge_lock = getattr(store, "lock", None) or threading.RLock()
