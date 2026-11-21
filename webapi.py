@@ -239,6 +239,14 @@ def _get_header(headers: Dict[str, str], name: str, default: str = "") -> str:
     return default
 
 
+def _get_host(headers) -> str:
+    """Extract the request Host header value."""
+    for k, v in headers.items():
+        if k.lower() == "host":
+            return v
+    return ""
+
+
 def _resolve_ref_name(repo: Repo, ref: str) -> str:
     """Resolve branch name or SHA to a commit SHA."""
     # Try as branch
@@ -306,13 +314,14 @@ def _walk_commits_paged(repo: Repo, start_sha: str, page: int, per_page: int) ->
     return commits[start:end]
 
 
-def _build_link_header(path: str, page: int, per_page: int, has_next: bool) -> str:
+def _build_link_header(path: str, page: int, per_page: int, has_next: bool, host: str = "") -> str:
     """Build Link header for pagination."""
+    base = f"http://{host}{path}" if host else path
     links = []
     if has_next:
-        links.append(f'<{path}?per_page={per_page}&page={page + 1}>; rel="next"')
+        links.append(f'<{base}?per_page={per_page}&page={page + 1}>; rel="next"')
     # last page - approximate
-    links.append(f'<{path}?per_page={per_page}&page={page + 1}>; rel="last"')
+    links.append(f'<{base}?per_page={per_page}&page={page + 1}>; rel="last"')
     return ", ".join(links)
 
 
@@ -496,7 +505,8 @@ def _handle_api_v3(
         resp_body = json.dumps([repo_json(r) for r in page_repos], separators=(",", ":"))
         hdrs = base_headers + [("Content-Type", "application/json; charset=utf-8")]
         if has_next:
-            hdrs.append(("Link", _build_link_header("/api/v3/user/repos", page, per_page, True)))
+            host = _get_host(headers)
+            hdrs.append(("Link", _build_link_header("/api/v3/user/repos", page, per_page, True, host)))
         return 200, hdrs, resp_body.encode()
     
     if api_path == "/user/repos" and method == "POST":
@@ -877,6 +887,7 @@ def _handle_contents_put(
         "sha": blob_sha,
         "size": len(content),
         "type": "file",
+        "encoding": "base64",
     }
     status = 200 if existing_sha else 201
     return status, base_headers + [("Content-Type", "application/json; charset=utf-8")], json.dumps({

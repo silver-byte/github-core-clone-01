@@ -287,7 +287,7 @@ class Parser:
             if self.match("NAME"):
                 kw = self.tokens[self.pos - 1].value
                 if kw == "query" or kw == "mutation":
-                    operations.append(self._parse_operation(kw))
+                    operations.append(self._parse_operation(kw, named=True))
                 elif kw == "fragment":
                     frag = self._parse_fragment()
                     fragments[frag.name] = frag
@@ -305,24 +305,29 @@ class Parser:
         
         return Document(operations, fragments)
     
-    def _parse_operation(self, op_type: str) -> OperationDefinition:
+    def _parse_operation(self, op_type: str, named: bool = False) -> OperationDefinition:
         name = None
         selection_set = None
         
         if self.current().type == "NAME":
-            # Check if this is an operation name or a field
-            next_pos = self.pos + 1
-            if next_pos < len(self.tokens):
-                next_token = self.tokens[next_pos]
-                if next_token.type in ("LBRACE", "LPAREN"):
-                    # This is a field, not an operation name. Treat as anonymous query.
-                    name = None
-                    # Parse the selection set starting from this field
-                    selection_set = self._parse_selection_set()
+            if named:
+                # An operation-type keyword (query/mutation) was consumed, so this
+                # NAME is the optional operation name, not a field.
+                name = self.advance().value
+            else:
+                # Check if this is an operation name or a field
+                next_pos = self.pos + 1
+                if next_pos < len(self.tokens):
+                    next_token = self.tokens[next_pos]
+                    if next_token.type in ("LBRACE", "LPAREN"):
+                        # This is a field, not an operation name. Treat as anonymous query.
+                        name = None
+                        # Parse the selection set starting from this field
+                        selection_set = self._parse_selection_set()
+                    else:
+                        name = self.advance().value
                 else:
                     name = self.advance().value
-            else:
-                name = self.advance().value
         
         if selection_set is None:
             variable_definitions = []
