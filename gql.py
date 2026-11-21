@@ -991,6 +991,7 @@ def resolve_field(context: ExecContext, type_name: str, payload: Any, sel: Selec
         "GitObject": resolve_git_object,
         "Label": resolve_label,
         "IssueComment": resolve_issue_comment,
+        "PullRequestChangedFile": resolve_changed_file,
     }
     
     handler = handlers.get(type_name)
@@ -1465,6 +1466,12 @@ def resolve_connection(context: ExecContext, type_name: str, payload: Dict, sel:
         return page_info
     elif sel.name == "totalCount":
         return total
+    return None
+
+
+def resolve_changed_file(context: ExecContext, payload: Any, sel: Selection, args: Dict) -> Any:
+    if isinstance(payload, dict):
+        return payload.get(sel.name)
     return None
 
 
