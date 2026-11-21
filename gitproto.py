@@ -616,6 +616,9 @@ def upload_pack_v0(repo: Any, body: bytes) -> bytes:
                 cache.clear()
             cache[key] = pack
     
+    if pack is None:
+        pack = write_pack(repo.objects, [])
+
     # Send pack in sideband chunks
     for i in range(0, len(pack), 65515):
         chunk = pack[i:i+65515]
